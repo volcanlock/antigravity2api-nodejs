@@ -54,10 +54,12 @@ app.use((req, res, next) => {
     '/sdapi/v1/upscalers', '/sdapi/v1/latent-upscale-modes',
     '/sdapi/v1/sd-vae', '/sdapi/v1/sd-modules'
   ];
-  if (!ignorePaths.some(p => req.path.startsWith(p))) {
+  // 提前获取完整路径，避免在路由处理后 req.path 被修改为相对路径
+  const fullPath = req.originalUrl.split('?')[0];
+  if (!ignorePaths.some(p => fullPath.startsWith(p))) {
     const start = Date.now();
     res.on('finish', () => {
-      logger.request(req.method, req.path, res.statusCode, Date.now() - start);
+      logger.request(req.method, fullPath, res.statusCode, Date.now() - start);
     });
   }
   next();
