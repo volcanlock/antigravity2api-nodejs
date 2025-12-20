@@ -68,9 +68,10 @@ function handleClaudeAssistantMessage(message, antigravityMessages, enableThinki
   const parts = [];
   
   if (enableThinking) {
-    parts.push(createThoughtPart(' ', reasoningSignature));
+    parts.push(createThoughtPart(' '));
   }
-  if (hasContent) parts.push({ text: textContent.trimEnd() });
+  if (hasContent) parts.push({ text: textContent.trimEnd(), thoughtSignature: reasoningSignature });
+  if (!enableThinking) delete parts[0].thoughtSignature;
 
   pushModelMessage({ parts, toolCalls, hasContent }, antigravityMessages);
 }

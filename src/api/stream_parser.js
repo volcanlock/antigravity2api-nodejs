@@ -101,6 +101,7 @@ function parseAndEmitStreamChunk(line, state, callback) {
           if (part.thoughtSignature) {
             state.reasoningSignature = part.thoughtSignature;
             if (state.sessionId && state.model) {
+              //console.log("服务器传入的签名："+state.reasoningSignature);
               setReasoningSignature(state.sessionId, state.model, part.thoughtSignature);
             }
           }

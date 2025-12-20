@@ -83,8 +83,8 @@ export function pushFunctionResponse(toolCallId, functionName, resultContent, an
  * @param {string} signature - 签名
  * @returns {Object} 思维 part
  */
-export function createThoughtPart(text, signature) {
-  return { text: text || ' ', thought: true, thoughtSignature: signature };
+export function createThoughtPart(text) {
+  return { text: text || ' ', thought: true }
 }
 
 /**
@@ -142,6 +142,7 @@ export function pushModelMessage({ parts, toolCalls, hasContent }, antigravityMe
     const allParts = [...parts, ...(toolCalls || [])];
     antigravityMessages.push({ role: 'model', parts: allParts });
   }
+  //console.log(JSON.stringify(antigravityMessages,null,2));
 }
 
 /**

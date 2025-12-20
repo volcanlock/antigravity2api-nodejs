@@ -48,7 +48,7 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
   const hasContent = message.content && message.content.trim() !== '';
   const { reasoningSignature, toolSignature } = getSignatureContext(sessionId, actualModelName);
-
+  
   const toolCalls = hasToolCalls
     ? message.tool_calls.map(toolCall => {
         const safeName = processToolName(toolCall.function.name, sessionId, actualModelName);
@@ -61,9 +61,10 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
   if (enableThinking) {
     const reasoningText = (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0)
       ? message.reasoning_content : ' ';
-    parts.push(createThoughtPart(reasoningText, message.thoughtSignature || reasoningSignature));
+    parts.push(createThoughtPart(reasoningText));
   }
-  if (hasContent) parts.push({ text: message.content.trimEnd() });
+  if (hasContent) parts.push({ text: message.content.trimEnd(), thoughtSignature: message.thoughtSignature || reasoningSignature });
+  if (!enableThinking) delete parts[0].thoughtSignature;
 
   pushModelMessage({ parts, toolCalls, hasContent }, antigravityMessages);
 }
@@ -85,6 +86,7 @@ function openaiMessageToAntigravity(openaiMessages, enableThinking, actualModelN
       handleToolCall(message, antigravityMessages);
     }
   }
+  console.log(JSON.stringify(antigravityMessages,null,2));
   return antigravityMessages;
 }
 
