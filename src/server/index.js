@@ -53,7 +53,15 @@ app.use((req, res, next) => {
     '/sdapi/v1/sd-vae', '/sdapi/v1/sd-modules'
   ];
   // 提前获取完整路径，避免在路由处理后 req.path 被修改为相对路径
-  const fullPath = req.originalUrl.split('?')[0];
+  const sanitizeTokenInPath = (p) => {
+    // 避免在日志中明文暴露 refreshToken（可能包含 %2F 等）
+    return String(p || '').replace(/(\/admin\/tokens\/)([^/]+)(?=\/|$)/g, (_m, prefix, tokenPart) => {
+      const s = String(tokenPart || '');
+      if (s.length <= 10) return `${prefix}***`;
+      return `${prefix}${s.slice(0, 6)}…${s.slice(-4)}`;
+    });
+  };
+  const fullPath = sanitizeTokenInPath(req.originalUrl.split('?')[0]);
   if (!ignorePaths.some(p => fullPath.startsWith(p))) {
     const start = Date.now();
     res.on('finish', () => {

@@ -10,6 +10,7 @@ import { buildClaudeErrorPayload } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
 import config from '../../config/config.js';
 import tokenManager from '../../auth/token_manager.js';
+import { scheduleQuotaUsageUpdate } from '../../auth/quota_usage_tracker.js';
 import {
   setStreamHeaders,
   createHeartbeat,
@@ -196,6 +197,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
           }));
           
           clearInterval(heartbeatTimer);
+          scheduleQuotaUsageUpdate(token, model, usage);
           res.end();
           return;
         }
@@ -323,6 +325,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
         }));
         
         clearInterval(heartbeatTimer);
+        scheduleQuotaUsageUpdate(token, model, usageData);
         res.end();
       } catch (error) {
         clearInterval(heartbeatTimer);
@@ -358,6 +361,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
       );
       
       res.json(response);
+      scheduleQuotaUsageUpdate(token, model, usage);
     }
   } catch (error) {
     logger.error('Claude 请求失败:', error.message);

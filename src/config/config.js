@@ -122,6 +122,7 @@ export function getProxyConfig() {
  * @returns {Object} 完整配置对象
  */
 export function buildConfig(jsonConfig) {
+  const quotaUsageJson = jsonConfig.other?.quotaUsage || {};
   return {
     server: {
       port: jsonConfig.server?.port || DEFAULT_SERVER_PORT,
@@ -171,7 +172,16 @@ export function buildConfig(jsonConfig) {
     // 调试：完整打印最终请求体与原始响应（可能包含敏感内容/大体积数据）
     debugDumpRequestResponse:
       jsonConfig.other?.debugDumpRequestResponse === true ||
-      process.env.DEBUG_DUMP_REQUEST_RESPONSE === '1'
+      process.env.DEBUG_DUMP_REQUEST_RESPONSE === '1',
+    quotaUsage: {
+      enabled: quotaUsageJson.enabled !== false,
+      // 精确模式默认开启（仅在默认采样未观测到变化时才会触发延迟采样，避免额外开销）
+      preciseEnabled: quotaUsageJson.preciseEnabled !== false,
+      retentionMs: Number.isFinite(quotaUsageJson.retentionMs) ? quotaUsageJson.retentionMs : 24 * 60 * 60 * 1000,
+      maxPointsPerModel: Number.isFinite(quotaUsageJson.maxPointsPerModel) ? quotaUsageJson.maxPointsPerModel : 2000,
+      defaultDelaysMs: Array.isArray(quotaUsageJson.defaultDelaysMs) ? quotaUsageJson.defaultDelaysMs : [0],
+      preciseDelaysMs: Array.isArray(quotaUsageJson.preciseDelaysMs) ? quotaUsageJson.preciseDelaysMs : [0, 8000, 20000]
+    }
   };
 }
 

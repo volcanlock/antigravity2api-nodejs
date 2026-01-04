@@ -382,8 +382,10 @@ export async function getModelsWithQuotas(token) {
   const quotas = {};
   Object.entries(data.models || {}).forEach(([modelId, modelData]) => {
     if (modelData.quotaInfo) {
+      const remaining = modelData.quotaInfo.remainingFraction;
       quotas[modelId] = {
-        r: modelData.quotaInfo.remainingFraction,
+        r: remaining,
+        r_raw: String(remaining),
         t: modelData.quotaInfo.resetTime
       };
     }

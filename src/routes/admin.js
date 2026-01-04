@@ -12,6 +12,7 @@ import { deepMerge } from '../utils/deepMerge.js';
 import { getModelsWithQuotas } from '../api/client.js';
 import { getEnvPath } from '../utils/paths.js';
 import dotenv from 'dotenv';
+import { decimalShiftPow10, normalizeDecimalString } from '../utils/decimal.js';
 
 const envPath = getEnvPath();
 
@@ -328,7 +329,7 @@ router.get('/tokens/:refreshToken/quotas', authMiddleware, async (req, res) => {
       const token = { access_token: tokenData.access_token, refresh_token: refreshToken };
       const quotas = await getModelsWithQuotas(token);
       quotaManager.updateQuota(refreshToken, quotas);
-      quotaData = { lastUpdated: Date.now(), models: quotas };
+      quotaData = quotaManager.getQuota(refreshToken) || { lastUpdated: Date.now(), models: quotas, usage: null };
     }
     
     // 转换时间为北京时间
@@ -336,6 +337,7 @@ router.get('/tokens/:refreshToken/quotas', authMiddleware, async (req, res) => {
     Object.entries(quotaData.models).forEach(([modelId, quota]) => {
       modelsWithBeijingTime[modelId] = {
         remaining: quota.r,
+        remainingRaw: quota.r_raw ?? String(quota.r ?? ''),
         resetTime: quotaManager.convertToBeijingTime(quota.t),
         resetTimeRaw: quota.t
       };
@@ -345,11 +347,134 @@ router.get('/tokens/:refreshToken/quotas', authMiddleware, async (req, res) => {
       success: true, 
       data: { 
         lastUpdated: quotaData.lastUpdated,
-        models: modelsWithBeijingTime 
+        models: modelsWithBeijingTime,
+        usage: quotaData.usage || null
       } 
     });
   } catch (error) {
     logger.error('获取额度失败:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+function normalizePercentText(raw) {
+  if (raw === null || raw === undefined) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+  s = s.replace(/^0+(?=\d)/, '');
+  if (s.startsWith('.')) s = `0${s}`;
+  return s;
+}
+
+function computeRemainingPercentRaw(quota) {
+  const raw = quota?.r_raw ?? (quota?.r ?? null);
+  const norm = normalizeDecimalString(raw);
+  if (!norm) return null;
+  return normalizePercentText(decimalShiftPow10(norm, 2));
+}
+
+function buildQuotaUsagePayload({ refreshToken, mode, windowMs, limit }) {
+  const safeMode = mode === 'precise' ? 'precise' : 'default';
+
+  const quotaUsageCfg = config?.quotaUsage || {};
+  const maxWindowMs = Number.isFinite(quotaUsageCfg.retentionMs) ? quotaUsageCfg.retentionMs : 24 * 60 * 60 * 1000;
+  const window = Number.isFinite(windowMs) ? Math.max(5 * 60 * 1000, Math.min(windowMs, maxWindowMs)) : Math.min(5 * 60 * 60 * 1000, maxWindowMs);
+  const cap = Number.isFinite(limit) ? Math.max(10, Math.min(Math.floor(limit), 2000)) : 300;
+
+  const record = quotaManager.getQuotaRecord(refreshToken, { ignoreTTL: true });
+  const usage = record?.usage || null;
+  const seriesByMode = usage?.series?.[safeMode] || {};
+  const now = Date.now();
+  const minT = now - window;
+
+  const modelsOut = {};
+  Object.entries(seriesByMode).forEach(([modelId, points]) => {
+    const list = Array.isArray(points) ? points : [];
+    const filtered = list
+      .filter(p => Number.isFinite(Number(p?.t)) && Number(p.t) >= minT)
+      .slice(-cap)
+      .sort((a, b) => Number(a.t) - Number(b.t));
+
+    const pointsWithValue = filtered
+      .map(p => ({ p, n: Number(normalizePercentText(p?.v)) }))
+      .filter(x => Number.isFinite(x.n));
+
+    const sortedByValue = [...pointsWithValue].sort((a, b) => a.n - b.n);
+    const count = sortedByValue.length;
+
+    const median = count ? sortedByValue[Math.floor((count - 1) / 2)] : null;
+    const last = count ? pointsWithValue[pointsWithValue.length - 1] : null;
+    const min = count ? sortedByValue[0] : null;
+    const max = count ? sortedByValue[count - 1] : null;
+
+    const remainingPercentRaw = computeRemainingPercentRaw(record?.models?.[modelId]);
+    const remainingPercent = remainingPercentRaw ? Number(remainingPercentRaw) : null;
+    const medianPercent = median ? median.n : null;
+    const callsLeft = (Number.isFinite(remainingPercent) && Number.isFinite(medianPercent) && medianPercent > 0)
+      ? Math.floor(remainingPercent / medianPercent)
+      : null;
+
+    modelsOut[modelId] = {
+      remainingPercentRaw,
+      points: filtered.map(p => ({
+        t: Number(p.t),
+        v: normalizePercentText(p.v),
+        a: normalizePercentText(p.a),
+        b: normalizePercentText(p.b),
+        pt: p.pt ?? null,
+        ct: p.ct ?? null,
+        tt: p.tt ?? null
+      })),
+      stats: {
+        count,
+        medianRaw: median ? normalizePercentText(median.p.v) : null,
+        lastRaw: last ? normalizePercentText(last.p.v) : null,
+        minRaw: min ? normalizePercentText(min.p.v) : null,
+        maxRaw: max ? normalizePercentText(max.p.v) : null,
+        callsLeft
+      }
+    };
+  });
+
+  return {
+    mode: safeMode,
+    windowMs: window,
+    now,
+    availableModes: {
+      default: true,
+      precise: Boolean(usage?.series?.precise && Object.keys(usage.series.precise || {}).length) || (quotaUsageCfg.preciseEnabled === true)
+    },
+    models: modelsOut
+  };
+}
+
+// 新接口：用 POST body 传 refreshToken（避免 URL 明文暴露）
+router.post('/quota-usage', authMiddleware, async (req, res) => {
+  try {
+    const refreshToken = req.body?.refreshToken;
+    if (!refreshToken) return res.status(400).json({ success: false, message: 'refreshToken必填' });
+    const mode = req.body?.mode === 'precise' ? 'precise' : 'default';
+    const windowMs = Number(req.body?.windowMs);
+    const limit = Number(req.body?.limit);
+    const payload = buildQuotaUsagePayload({ refreshToken, mode, windowMs, limit });
+    res.json({ success: true, data: payload });
+  } catch (error) {
+    logger.error('获取额度用量统计失败:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 兼容旧接口（GET + URL 参数）
+router.get('/tokens/:refreshToken/quota-usage', authMiddleware, async (req, res) => {
+  try {
+    const { refreshToken } = req.params;
+    const mode = req.query.mode === 'precise' ? 'precise' : 'default';
+    const windowMs = Number(req.query.windowMs);
+    const limit = Number(req.query.limit);
+    const payload = buildQuotaUsagePayload({ refreshToken, mode, windowMs, limit });
+    res.json({ success: true, data: payload });
+  } catch (error) {
+    logger.error('获取额度用量统计失败:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 });

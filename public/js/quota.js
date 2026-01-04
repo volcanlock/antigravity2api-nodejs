@@ -29,6 +29,15 @@ const quotaCache = {
     }
 };
 
+function normalizePercentRawText(raw) {
+    if (raw === null || raw === undefined) return null;
+    let s = String(raw).trim();
+    if (!s) return null;
+    s = s.replace(/^0+(?=\d)/, '');
+    if (s.startsWith('.')) s = `0${s}`;
+    return s;
+}
+
 const QUOTA_GROUPS = [
     {
         key: 'claude',
@@ -142,6 +151,7 @@ async function loadTokenQuotaSummary(refreshToken) {
         renderQuotaSummary(summaryEl, cached);
         return;
     }
+
     
     try {
         const response = await authFetch(`/admin/tokens/${encodeURIComponent(refreshToken)}/quotas`, {
@@ -176,6 +186,15 @@ function renderQuotaSummary(summaryEl, quotaData) {
     const grouped = groupModels(models);
     const groupByKey = Object.fromEntries(QUOTA_GROUPS.map(g => [g.key, g]));
 
+    const formatTime = (ts) => {
+        if (!ts) return '';
+        try {
+            return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        } catch {
+            return '';
+        }
+    };
+
     const rowsHtml = QUOTA_SUMMARY_KEYS.map((groupKey) => {
         const group = groupByKey[groupKey];
         const summary = summarizeGroup(grouped[groupKey]);
@@ -183,6 +202,24 @@ function renderQuotaSummary(summaryEl, quotaData) {
         const safeResetTime = escapeHtml(summary.resetTime);
         const resetText = safeResetTime === '--' ? '--' : `重置: ${safeResetTime}`;
         const safeLabel = escapeHtml(group?.label || groupKey);
+
+        const consumeEntry = quotaData?.usage?.groups?.[groupKey];
+        const consumeRaw = normalizePercentRawText(consumeEntry?.consumedPercentRaw);
+        const consumeText = consumeRaw ? `${consumeRaw}%` : '--';
+        let consumeTitle = '每次调用消耗：暂无数据';
+        if (consumeRaw) {
+            const prevPctRaw = normalizePercentRawText(consumeEntry?.prevPercentRaw);
+            const nextPctRaw = normalizePercentRawText(consumeEntry?.nextPercentRaw);
+            const prevPct = prevPctRaw ? `${prevPctRaw}%` : null;
+            const nextPct = nextPctRaw ? `${nextPctRaw}%` : null;
+            const titleParts = [];
+            if (prevPct && nextPct) titleParts.push(`${prevPct} → ${nextPct}`);
+            titleParts.push(`每次调用消耗: ${consumeText}`);
+            if (consumeEntry?.modelId) titleParts.push(consumeEntry.modelId);
+            if (consumeEntry?.calledAt) titleParts.push(formatTime(consumeEntry.calledAt));
+            consumeTitle = titleParts.join(' · ');
+        }
+
         const title = `${group?.label || groupKey} - 重置: ${summary.resetTime}`;
         return `
             <div class="quota-summary-row" title="${escapeHtml(title)}">
@@ -191,6 +228,7 @@ function renderQuotaSummary(summaryEl, quotaData) {
                 <span class="quota-summary-bar"><span style="width:${summary.percentage}%;background:${barColor}"></span></span>
                 <span class="quota-summary-pct">${summary.percentageText}</span>
                 <span class="quota-summary-reset">${resetText}</span>
+                <span class="quota-summary-consume" title="${escapeHtml(consumeTitle)}">${escapeHtml(consumeText)}</span>
             </div>
         `;
     }).join('');
@@ -304,6 +342,7 @@ async function refreshInlineQuota(cardId, refreshToken) {
     if (detailEl) detailEl.innerHTML = '<div class="quota-loading-small">刷新中...</div>';
     if (summaryEl) summaryEl.textContent = '📊 刷新中...';
     
+
     quotaCache.clear(refreshToken);
     
     try {
@@ -351,6 +390,7 @@ async function showQuotaModal(refreshToken) {
             </div>
             <div class="modal-actions">
                 <button class="btn btn-secondary btn-sm" onclick="this.closest('.modal').remove()">关闭</button>
+                <button class="btn btn-secondary btn-sm" onclick="showQuotaUsageModal()">📈 统计</button>
                 <button class="btn btn-info btn-sm" id="quotaRefreshBtn" onclick="refreshQuotaData()">🔄 刷新</button>
             </div>
         </div>
@@ -386,6 +426,9 @@ async function switchQuotaAccountByIndex(index) {
     });
     
     await loadQuotaData(token.refresh_token);
+    if (document.getElementById('quotaUsageModal')) {
+        await loadQuotaUsageDataAndRender(true);
+    }
 }
 
 async function switchQuotaAccount(refreshToken) {
@@ -406,20 +449,21 @@ async function loadQuotaData(refreshToken, forceRefresh = false) {
     }
     
     if (!forceRefresh) {
-        const cached = quotaCache.get(refreshToken);
-        if (cached) {
-            renderQuotaModal(quotaContent, cached);
-            if (refreshBtn) {
-                refreshBtn.disabled = false;
-                refreshBtn.textContent = '🔄 刷新';
-            }
+         const cached = quotaCache.get(refreshToken);
+         if (cached) {
+             renderQuotaModal(quotaContent, cached);
+             if (refreshBtn) {
+                 refreshBtn.disabled = false;
+                 refreshBtn.textContent = '🔄 刷新';
+             }
             return;
         }
-    } else {
-        quotaCache.clear(refreshToken);
-    }
-    
-    quotaContent.innerHTML = '<div class="quota-loading">加载中...</div>';
+     } else {
+         quotaCache.clear(refreshToken);
+     }
+
+     
+     quotaContent.innerHTML = '<div class="quota-loading">加载中...</div>';
     
     try {
         const url = `/admin/tokens/${encodeURIComponent(refreshToken)}/quotas${forceRefresh ? '?refresh=true' : ''}`;
@@ -429,12 +473,12 @@ async function loadQuotaData(refreshToken, forceRefresh = false) {
         
         const data = await response.json();
         
-        if (data.success) {
-            quotaCache.set(refreshToken, data.data);
-            renderQuotaModal(quotaContent, data.data);
-        } else {
-            quotaContent.innerHTML = `<div class="quota-error">加载失败: ${escapeHtml(data.message)}</div>`;
-        }
+         if (data.success) {
+             quotaCache.set(refreshToken, data.data);
+             renderQuotaModal(quotaContent, data.data);
+         } else {
+             quotaContent.innerHTML = `<div class="quota-error">加载失败: ${escapeHtml(data.message)}</div>`;
+         }
     } catch (error) {
         if (quotaContent) {
             quotaContent.innerHTML = `<div class="quota-error">加载失败: ${escapeHtml(error.message)}</div>`;
@@ -470,6 +514,15 @@ function renderQuotaModal(quotaContent, quotaData) {
     }
     
     const grouped = groupModels(models);
+
+    const formatTime = (ts) => {
+        if (!ts) return '';
+        try {
+            return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        } catch {
+            return '';
+        }
+    };
     
     let html = '';
     
@@ -501,6 +554,21 @@ function renderQuotaModal(quotaContent, quotaData) {
             const shortName = escapeHtml(modelId.replace('models/', '').replace('publishers/google/', ''));
             const safeModelId = escapeHtml(modelId);
             const safeResetTime = escapeHtml(quota.resetTime);
+            const consumeEntry = quotaData?.usage?.models?.[modelId];
+            const consumeRaw = normalizePercentRawText(consumeEntry?.consumedPercentRaw);
+            const consumeText = consumeRaw ? `${consumeRaw}%` : '--';
+            let consumeTitle = '每次调用消耗：暂无数据';
+            if (consumeRaw) {
+                const prevPctRaw = normalizePercentRawText(consumeEntry?.prevPercentRaw);
+                const nextPctRaw = normalizePercentRawText(consumeEntry?.nextPercentRaw);
+                const prevPct = prevPctRaw ? `${prevPctRaw}%` : null;
+                const nextPct = nextPctRaw ? `${nextPctRaw}%` : null;
+                const titleParts = [];
+                if (prevPct && nextPct) titleParts.push(`${prevPct} → ${nextPct}`);
+                titleParts.push(`每次调用消耗: ${consumeText}`);
+                if (consumeEntry?.calledAt) titleParts.push(formatTime(consumeEntry.calledAt));
+                consumeTitle = titleParts.join(' · ');
+            }
             groupHtml += `
                 <div class="quota-item">
                     <div class="quota-model-name" title="${safeModelId}">
@@ -512,6 +580,7 @@ function renderQuotaModal(quotaContent, quotaData) {
                     </div>
                     <div class="quota-info-row">
                         <span class="quota-reset">重置: ${safeResetTime}</span>
+                        <span class="quota-consume" title="${escapeHtml(consumeTitle)}">${escapeHtml(consumeText)}</span>
                         <span class="quota-percentage">${percentageText}</span>
                     </div>
                 </div>
@@ -530,4 +599,365 @@ function renderQuotaModal(quotaContent, quotaData) {
     }
     
     quotaContent.innerHTML = html;
+}
+
+// ==================== 用量统计（折线图） ====================
+
+const quotaUsageState = {
+    mode: 'default',
+    windowMs: 5 * 60 * 60 * 1000,
+    limit: 300,
+    refreshToken: null,
+    data: null,
+    selectedModelId: null,
+    loading: false,
+    pollTimer: null
+};
+
+function formatTimeShort(ts) {
+    if (!ts) return '--';
+    try {
+        return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    } catch {
+        return '--';
+    }
+}
+
+function getShortModelName(modelId) {
+    return String(modelId || '').replace('models/', '').replace('publishers/google/', '');
+}
+
+function buildSparklineSvg(points, width = 86, height = 26, stroke = 'rgba(239, 68, 68, 0.95)') {
+    const nums = (points || [])
+        .map(p => Number(normalizePercentRawText(p?.v)))
+        .filter(n => Number.isFinite(n));
+    if (nums.length < 2) {
+        return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true"></svg>`;
+    }
+    let min = Math.min(...nums);
+    let max = Math.max(...nums);
+    if (min === max) max = min + 1;
+    const pad = 2;
+    const w = width - pad * 2;
+    const h = height - pad * 2;
+    const stepX = w / (nums.length - 1);
+    const d = nums.map((v, i) => {
+        const x = pad + i * stepX;
+        const y = pad + (1 - (v - min) / (max - min)) * h;
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' ');
+    return `
+        <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true">
+            <path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+    `;
+}
+
+function buildLineChartSvg(points, width = 620, height = 220) {
+    const pts = (points || [])
+        .map(p => ({ t: Number(p?.t), v: Number(normalizePercentRawText(p?.v)) }))
+        .filter(p => Number.isFinite(p.t) && Number.isFinite(p.v));
+    if (pts.length < 2) return '<div class="quota-usage-empty">暂无数据</div>';
+
+    let minV = Math.min(...pts.map(p => p.v));
+    let maxV = Math.max(...pts.map(p => p.v));
+    if (minV === maxV) maxV = minV + 1;
+    const minT = Math.min(...pts.map(p => p.t));
+    const maxT = Math.max(...pts.map(p => p.t));
+    const pad = 16;
+    const w = width - pad * 2;
+    const h = height - pad * 2;
+    const scaleX = (t) => (maxT === minT) ? pad : pad + ((t - minT) / (maxT - minT)) * w;
+    const scaleY = (v) => pad + (1 - (v - minV) / (maxV - minV)) * h;
+
+    const d = pts.map((p, i) => {
+        const x = scaleX(p.t);
+        const y = scaleY(p.v);
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' ');
+
+    return `
+        <svg class="quota-usage-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="额度消耗折线图">
+            <path d="${d}" fill="none" stroke="rgba(239, 68, 68, 0.95)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+    `;
+}
+
+function getQuotaUsageSubtitle(refreshToken) {
+    const t = (cachedTokens || []).find(x => x.refresh_token === refreshToken);
+    const email = t?.email || '未知';
+    const short = email.length > 28 ? `${email.slice(0, 25)}...` : email;
+    return short;
+}
+
+async function fetchQuotaUsage(refreshToken, { mode, windowMs, limit }) {
+    const response = await authFetch('/admin/quota-usage', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${authToken}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ refreshToken, mode, windowMs, limit })
+    });
+
+    const raw = await response.text();
+    let parsed = null;
+    try {
+        parsed = raw ? JSON.parse(raw) : null;
+    } catch {
+        parsed = null;
+    }
+
+    if (!response.ok) {
+        const msg = parsed?.message || `HTTP ${response.status}`;
+        if (response.status === 404) {
+            throw new Error(`${msg}（后端未更新/未重启？）`);
+        }
+        throw new Error(msg);
+    }
+    if (!parsed?.success) throw new Error(parsed?.message || '加载失败');
+    return parsed.data;
+}
+
+function renderQuotaUsageModal() {
+    const listEl = document.getElementById('quotaUsageList');
+    const detailEl = document.getElementById('quotaUsageDetail');
+    const subtitleEl = document.getElementById('quotaUsageSubtitle');
+    if (subtitleEl && quotaUsageState.refreshToken) {
+        subtitleEl.textContent = getQuotaUsageSubtitle(quotaUsageState.refreshToken);
+    }
+    if (!listEl || !detailEl) return;
+
+    const data = quotaUsageState.data;
+    const models = data?.models || {};
+    const modelIds = Object.keys(models);
+    if (modelIds.length === 0) {
+        listEl.innerHTML = '<div class="quota-usage-empty">暂无记录</div>';
+        detailEl.innerHTML = '<div class="quota-usage-empty">暂无记录</div>';
+        return;
+    }
+
+    const sortedIds = modelIds.sort((a, b) => getShortModelName(a).localeCompare(getShortModelName(b)));
+    if (!quotaUsageState.selectedModelId || !models[quotaUsageState.selectedModelId]) {
+        quotaUsageState.selectedModelId = sortedIds[0];
+    }
+
+    const listHtml = sortedIds.map((modelId) => {
+        const m = models[modelId];
+        const stats = m?.stats || {};
+        const lastText = stats.lastRaw ? `${stats.lastRaw}%` : '--';
+        const medianText = stats.medianRaw ? `${stats.medianRaw}%` : '--';
+        const callsLeft = (stats.callsLeft === null || stats.callsLeft === undefined) ? '--' : String(stats.callsLeft);
+        const spark = buildSparklineSvg(m?.points || []);
+        const active = modelId === quotaUsageState.selectedModelId ? ' active' : '';
+        return `
+            <button type="button" class="quota-usage-item${active}" onclick="selectQuotaUsageModel('${escapeJs(modelId)}')">
+                <div class="quota-usage-item-top">
+                    <span class="quota-usage-item-name" title="${escapeHtml(modelId)}">${escapeHtml(getShortModelName(modelId))}</span>
+                    <span class="quota-usage-item-last">${escapeHtml(lastText)}</span>
+                </div>
+                <div class="quota-usage-item-bottom">
+                    <span class="quota-usage-item-meta">中位 ${escapeHtml(medianText)} · 余≈${escapeHtml(callsLeft)}次</span>
+                    <span class="quota-usage-item-spark">${spark}</span>
+                </div>
+            </button>
+        `;
+    }).join('');
+
+    listEl.innerHTML = listHtml;
+
+    const selected = models[quotaUsageState.selectedModelId];
+    const sStats = selected?.stats || {};
+    const remaining = selected?.remainingPercentRaw ? `${selected.remainingPercentRaw}%` : '--';
+    const detailHeader = `
+        <div class="quota-usage-detail-header">
+            <div class="quota-usage-detail-title">${escapeHtml(getShortModelName(quotaUsageState.selectedModelId))}</div>
+            <div class="quota-usage-detail-meta">剩余 ${escapeHtml(remaining)} · 中位 ${escapeHtml(sStats.medianRaw ? `${sStats.medianRaw}%` : '--')}</div>
+        </div>
+    `;
+    const chartHtml = buildLineChartSvg(selected?.points || []);
+
+    const rows = (selected?.points || []).slice(-20).reverse().map(p => {
+        const v = p?.v ? `${p.v}%` : '--';
+        const tt = Number.isFinite(Number(p?.tt)) ? `${p.tt} tok` : '--';
+        const pt = Number.isFinite(Number(p?.pt)) ? p.pt : null;
+        const ct = Number.isFinite(Number(p?.ct)) ? p.ct : null;
+        const tokenDetail = (pt !== null || ct !== null) ? `(${pt ?? '--'}/${ct ?? '--'})` : '';
+        return `
+            <div class="quota-usage-row">
+                <span class="quota-usage-cell time">${escapeHtml(formatTimeShort(p?.t))}</span>
+                <span class="quota-usage-cell v">${escapeHtml(v)}</span>
+                <span class="quota-usage-cell tok" title="total_tokens (prompt/completion)">${escapeHtml(`${tt} ${tokenDetail}`.trim())}</span>
+            </div>
+        `;
+    }).join('');
+
+    detailEl.innerHTML = `
+        ${detailHeader}
+        <div class="quota-usage-chart-wrap">${chartHtml}</div>
+        <div class="quota-usage-stats">
+            <span>记录 ${escapeHtml(String(sStats.count ?? 0))}</span>
+            <span>最小 ${escapeHtml(sStats.minRaw ? `${sStats.minRaw}%` : '--')}</span>
+            <span>最大 ${escapeHtml(sStats.maxRaw ? `${sStats.maxRaw}%` : '--')}</span>
+            <span>估算剩余次数 ${escapeHtml(sStats.callsLeft === null || sStats.callsLeft === undefined ? '--' : `≈${sStats.callsLeft} 次`)}</span>
+        </div>
+        <div class="quota-usage-table">
+            <div class="quota-usage-table-head">
+                <span class="quota-usage-cell time">时间</span>
+                <span class="quota-usage-cell v">消耗</span>
+                <span class="quota-usage-cell tok">Token</span>
+            </div>
+            ${rows || '<div class="quota-usage-empty">暂无明细</div>'}
+        </div>
+    `;
+}
+
+async function loadQuotaUsageDataAndRender(force = false) {
+    const modal = document.getElementById('quotaUsageModal');
+    if (!modal) return;
+
+    if (quotaUsageState.loading) return;
+    quotaUsageState.loading = true;
+
+    const btn = document.getElementById('quotaUsageRefreshBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '? 加载中...';
+    }
+
+    try {
+        const refreshToken = currentQuotaToken || quotaUsageState.refreshToken;
+        if (!refreshToken) return;
+        quotaUsageState.refreshToken = refreshToken;
+
+        const modeSel = document.getElementById('quotaUsageMode');
+        const winSel = document.getElementById('quotaUsageWindow');
+        if (modeSel) quotaUsageState.mode = modeSel.value === 'precise' ? 'precise' : 'default';
+        if (winSel) quotaUsageState.windowMs = Number(winSel.value) || quotaUsageState.windowMs;
+
+        const data = await fetchQuotaUsage(refreshToken, {
+            mode: quotaUsageState.mode,
+            windowMs: quotaUsageState.windowMs,
+            limit: quotaUsageState.limit
+        });
+
+        const preciseAvailable = Boolean(data?.availableModes?.precise);
+        if (modeSel) {
+            const opt = [...modeSel.options].find(o => o.value === 'precise');
+            if (opt) opt.disabled = !preciseAvailable;
+            if (!preciseAvailable && quotaUsageState.mode === 'precise') {
+                quotaUsageState.mode = 'default';
+                modeSel.value = 'default';
+                quotaUsageState.data = await fetchQuotaUsage(refreshToken, {
+                    mode: 'default',
+                    windowMs: quotaUsageState.windowMs,
+                    limit: quotaUsageState.limit
+                });
+            } else {
+                quotaUsageState.data = data;
+            }
+        } else {
+            quotaUsageState.data = data;
+        }
+
+        renderQuotaUsageModal();
+    } catch (e) {
+        const listEl = document.getElementById('quotaUsageList');
+        const detailEl = document.getElementById('quotaUsageDetail');
+        const msg = escapeHtml(e?.message || '加载失败');
+        if (listEl) listEl.innerHTML = `<div class="quota-usage-empty">⚠ ${msg}</div>`;
+        if (detailEl) detailEl.innerHTML = `<div class="quota-usage-empty">⚠ ${msg}</div>`;
+    } finally {
+        quotaUsageState.loading = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🔄 刷新';
+        }
+    }
+}
+
+function selectQuotaUsageModel(modelId) {
+    quotaUsageState.selectedModelId = modelId;
+    renderQuotaUsageModal();
+}
+
+async function showQuotaUsageModal() {
+    if (!currentQuotaToken) return;
+
+    const existing = document.getElementById('quotaUsageModal');
+    if (existing) existing.remove();
+
+    if (quotaUsageState.pollTimer) {
+        clearInterval(quotaUsageState.pollTimer);
+        quotaUsageState.pollTimer = null;
+    }
+
+    quotaUsageState.refreshToken = currentQuotaToken;
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'quotaUsageModal';
+    modal.innerHTML = `
+        <div class="modal-content modal-xl quota-usage-modal">
+            <div class="quota-modal-header">
+                <div class="modal-title">📈 用量统计</div>
+                <div class="quota-update-time" id="quotaUsageSubtitle">${escapeHtml(getQuotaUsageSubtitle(currentQuotaToken))}</div>
+            </div>
+            <div class="quota-usage-controls">
+                <div class="quota-usage-control">
+                    <span class="quota-usage-label">模式</span>
+                    <select id="quotaUsageMode" class="quota-usage-select">
+                        <option value="default">默认</option>
+                        <option value="precise">精确</option>
+                    </select>
+                </div>
+                <div class="quota-usage-control">
+                    <span class="quota-usage-label">窗口</span>
+                    <select id="quotaUsageWindow" class="quota-usage-select">
+                        <option value="${5 * 60 * 60 * 1000}">5小时</option>
+                        <option value="${24 * 60 * 60 * 1000}">24小时</option>
+                    </select>
+                </div>
+                <button class="btn btn-info btn-sm" id="quotaUsageRefreshBtn">🔄 刷新</button>
+            </div>
+            <div class="quota-usage-layout">
+                <div class="quota-usage-list" id="quotaUsageList"></div>
+                <div class="quota-usage-detail" id="quotaUsageDetail"></div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary btn-sm" onclick="this.closest('.modal').remove()">关闭</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+    const modeSel = document.getElementById('quotaUsageMode');
+    const winSel = document.getElementById('quotaUsageWindow');
+    if (modeSel) modeSel.value = quotaUsageState.mode;
+    if (winSel) winSel.value = String(quotaUsageState.windowMs);
+
+    modeSel?.addEventListener('change', async () => {
+        await loadQuotaUsageDataAndRender(true);
+    });
+    winSel?.addEventListener('change', async () => {
+        await loadQuotaUsageDataAndRender(true);
+    });
+    document.getElementById('quotaUsageRefreshBtn')?.addEventListener('click', async () => {
+        await loadQuotaUsageDataAndRender(true);
+    });
+
+    await loadQuotaUsageDataAndRender(true);
+
+    // 轮询同步：避免“调用后延迟记录/需要刷新”导致看起来不更新
+    quotaUsageState.pollTimer = setInterval(() => {
+        if (!document.getElementById('quotaUsageModal')) {
+            clearInterval(quotaUsageState.pollTimer);
+            quotaUsageState.pollTimer = null;
+            return;
+        }
+        if (!quotaUsageState.loading) {
+            loadQuotaUsageDataAndRender(false);
+        }
+    }, 4000);
 }
