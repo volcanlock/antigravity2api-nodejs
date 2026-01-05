@@ -44,9 +44,23 @@ function extractImagesFromContent(content) {
   return result;
 }
 
+function getTextContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter(item => item.type === 'text')
+      .map(item => item.text || '')
+      .join('');
+  }
+  return '';
+}
+
 function handleAssistantMessage(message, antigravityMessages, enableThinking, actualModelName, sessionId) {
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
-  const hasContent = message.content && message.content.trim() !== '';
+  const textContent = getTextContent(message.content);
+  const hasContent = textContent.trim() !== '';
   const { reasoningSignature, toolSignature } = getSignatureContext(sessionId, actualModelName);
 
   const toolCalls = hasToolCalls
@@ -63,7 +77,7 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
       ? message.reasoning_content : ' ';
     parts.push(createThoughtPart(reasoningText));
   }
-  if (hasContent) parts.push({ text: message.content.trimEnd(), thoughtSignature: message.thoughtSignature || reasoningSignature });
+  if (hasContent) parts.push({ text: textContent.trimEnd(), thoughtSignature: message.thoughtSignature || reasoningSignature });
   if (!enableThinking && parts[0]) delete parts[0].thoughtSignature;
 
   pushModelMessage({ parts, toolCalls, hasContent }, antigravityMessages);
