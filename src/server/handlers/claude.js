@@ -10,6 +10,7 @@ import { buildClaudeErrorPayload } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
 import config from '../../config/config.js';
 import tokenManager from '../../auth/token_manager.js';
+import { scheduleQuotaUsageUpdate } from '../../auth/quota_usage_tracker.js';
 import {
   setStreamHeaders,
   createHeartbeat,
@@ -110,23 +111,23 @@ export const createClaudeResponse = (id, model, content, reasoning, reasoningSig
  */
 export const handleClaudeRequest = async (req, res, isStream) => {
   const { messages, model, system, tools, ...rawParams } = req.body;
-  
+
   try {
     if (!messages) {
       return res.status(400).json(buildClaudeErrorPayload({ message: 'messages is required' }, 400));
     }
-    
+
     const token = await tokenManager.getToken();
     if (!token) {
       throw new Error('没有可用的token，请运行 npm run login 获取token');
     }
-    
+
     // 使用统一参数规范化模块处理 Claude 格式参数
     const parameters = normalizeClaudeParameters(rawParams);
-    
+
     const isImageModel = model.includes('-image');
     const requestBody = generateClaudeRequestBody(messages, model, parameters, tools, system, token);
-    
+
     if (isImageModel) {
       prepareImageRequest(requestBody);
     }
@@ -196,6 +197,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
           }));
           
           clearInterval(heartbeatTimer);
+          scheduleQuotaUsageUpdate(token, model, usage);
           res.end();
           return;
         }
@@ -323,6 +325,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
         }));
         
         clearInterval(heartbeatTimer);
+        scheduleQuotaUsageUpdate(token, model, usageData);
         res.end();
       } catch (error) {
         clearInterval(heartbeatTimer);
@@ -358,6 +361,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
       );
       
       res.json(response);
+      scheduleQuotaUsageUpdate(token, model, usage);
     }
   } catch (error) {
     logger.error('Claude 请求失败:', error.message);

@@ -9,6 +9,7 @@ import { buildGeminiErrorPayload } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
 import config from '../../config/config.js';
 import tokenManager from '../../auth/token_manager.js';
+import { scheduleQuotaUsageUpdate } from '../../auth/quota_usage_tracker.js';
 import {
   setStreamHeaders,
   createHeartbeat,
@@ -39,7 +40,12 @@ export const createGeminiResponse = (content, reasoning, reasoningSignature, too
   }
   
   if (content) {
-    parts.push({ text: content });
+    const textPart = { text: content };
+    // 生图模型没有 thought part，但上游仍可能返回 thoughtSignature；透传时挂在文本 part 上
+    if (!reasoning && reasoningSignature && config.passSignatureToClient) {
+      textPart.thoughtSignature = reasoningSignature;
+    }
+    parts.push(textPart);
   }
   
   if (toolCalls && toolCalls.length > 0) {
@@ -185,15 +191,16 @@ export const handleGeminiRequest = async (req, res, modelName, isStream) => {
       try {
         if (isImageModel) {
           // 生图模型：使用非流式获取结果后一次性返回
-          const { content, usage } = await with429Retry(
+          const { content, usage, reasoningSignature } = await with429Retry(
             () => generateAssistantResponseNoStream(requestBody, token),
             safeRetries,
             'gemini.stream.image '
           );
-          const chunk = createGeminiResponse(content, null, null, null, 'STOP', usage);
+          const chunk = createGeminiResponse(content, null, reasoningSignature, null, 'STOP', usage);
           writeStreamData(res, chunk);
           clearInterval(heartbeatTimer);
           endStream(res, false);
+          scheduleQuotaUsageUpdate(token, modelName, usage);
           return;
         }
         
@@ -230,6 +237,7 @@ export const handleGeminiRequest = async (req, res, modelName, isStream) => {
 
         clearInterval(heartbeatTimer);
         endStream(res);
+        scheduleQuotaUsageUpdate(token, modelName, usageData);
       } catch (error) {
         clearInterval(heartbeatTimer);
         if (!res.writableEnded) {
@@ -254,6 +262,7 @@ export const handleGeminiRequest = async (req, res, modelName, isStream) => {
       const finishReason = toolCalls.length > 0 ? "STOP" : "STOP";
       const response = createGeminiResponse(content, reasoningContent, reasoningSignature, toolCalls, finishReason, usage);
       res.json(response);
+      scheduleQuotaUsageUpdate(token, modelName, usage);
     }
   } catch (error) {
     logger.error('Gemini 请求失败:', error.message);

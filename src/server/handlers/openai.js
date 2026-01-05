@@ -9,6 +9,7 @@ import { buildOpenAIErrorPayload } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
 import config from '../../config/config.js';
 import tokenManager from '../../auth/token_manager.js';
+import { scheduleQuotaUsageUpdate } from '../../auth/quota_usage_tracker.js';
 import {
   createResponseMeta,
   setStreamHeaders,
@@ -77,17 +78,22 @@ export const handleOpenAIRequest = async (req, res) => {
       const heartbeatTimer = createHeartbeat(res);
 
       try {
+        let usageData = null;
         if (isImageModel) {
-          const { content, usage } = await with429Retry(
+          const { content, usage, reasoningSignature } = await with429Retry(
             () => generateAssistantResponseNoStream(requestBody, token),
             safeRetries,
             'chat.stream.image '
           );
-          writeStreamData(res, createStreamChunk(id, created, model, { content }));
-          writeStreamData(res, { ...createStreamChunk(id, created, model, {}, 'stop'), usage });
+          usageData = usage;
+          const delta = { content };
+          if (reasoningSignature && config.passSignatureToClient) {
+            delta.thoughtSignature = reasoningSignature;
+          }
+          writeStreamData(res, createStreamChunk(id, created, model, delta));
+          writeStreamData(res, { ...createStreamChunk(id, created, model, {}, 'stop'), usage: usageData });
         } else {
           let hasToolCall = false;
-          let usageData = null;
 
           await with429Retry(
             () => generateAssistantResponse(requestBody, token, (data) => {
@@ -126,6 +132,7 @@ export const handleOpenAIRequest = async (req, res) => {
 
         clearInterval(heartbeatTimer);
         endStream(res);
+        scheduleQuotaUsageUpdate(token, model, usageData);
       } catch (error) {
         clearInterval(heartbeatTimer);
         throw error;
@@ -171,6 +178,7 @@ export const handleOpenAIRequest = async (req, res) => {
       };
       
       res.json(response);
+      scheduleQuotaUsageUpdate(token, model, usage);
     }
   } catch (error) {
     logger.error('生成响应失败:', error.message);

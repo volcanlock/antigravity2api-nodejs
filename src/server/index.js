@@ -11,7 +11,6 @@ import logger from '../utils/logger.js';
 import config from '../config/config.js';
 import memoryManager from '../utils/memoryManager.js';
 import { getPublicDir, getRelativePath } from '../utils/paths.js';
-import { MEMORY_CHECK_INTERVAL } from '../constants/index.js';
 import { errorHandler } from '../utils/errors.js';
 import { getChunkPoolSize, clearChunkPool } from './stream.js';
 
@@ -29,8 +28,7 @@ logger.info(`静态文件目录: ${getRelativePath(publicDir)}`);
 const app = express();
 
 // ==================== 内存管理 ====================
-memoryManager.setThreshold(config.server.memoryThreshold);
-memoryManager.start(MEMORY_CHECK_INTERVAL);
+memoryManager.start(config.server.memoryCleanupInterval);
 
 // ==================== 基础中间件 ====================
 app.use(cors());
@@ -55,7 +53,15 @@ app.use((req, res, next) => {
     '/sdapi/v1/sd-vae', '/sdapi/v1/sd-modules'
   ];
   // 提前获取完整路径，避免在路由处理后 req.path 被修改为相对路径
-  const fullPath = req.originalUrl.split('?')[0];
+  const sanitizeTokenInPath = (p) => {
+    // 避免在日志中明文暴露 refreshToken（可能包含 %2F 等）
+    return String(p || '').replace(/(\/admin\/tokens\/)([^/]+)(?=\/|$)/g, (_m, prefix, tokenPart) => {
+      const s = String(tokenPart || '');
+      if (s.length <= 10) return `${prefix}***`;
+      return `${prefix}${s.slice(0, 6)}…${s.slice(-4)}`;
+    });
+  };
+  const fullPath = sanitizeTokenInPath(req.originalUrl.split('?')[0]);
   if (!ignorePaths.some(p => fullPath.startsWith(p))) {
     const start = Date.now();
     res.on('finish', () => {
@@ -115,7 +121,6 @@ app.get('/v1/memory', (req, res) => {
     rss: usage.rss,
     external: usage.external,
     arrayBuffers: usage.arrayBuffers,
-    pressure: memoryManager.getCurrentPressure(),
     poolSizes: memoryManager.getPoolSizes(),
     chunkPoolSize: getChunkPoolSize()
   });
