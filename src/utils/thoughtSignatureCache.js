@@ -49,11 +49,14 @@ const toolSignaturesByModel = new Map(); // model -> SignatureRing
 
 // 上限：模型维度 & 每个模型保留的签名数量
 const MAX_MODEL_ENTRIES = 16;
-const MAX_SIGNATURES_PER_MODEL = 8;
+const MAX_SIGNATURES_PER_MODEL = 3;
 
 function makeModelKey(model) {
   if (!model) return null;
-  return String(model);
+  const raw = String(model);
+  // 生图模型会带分辨率后缀（例如 `-4K` / `-2K`），但实际请求时会被剥离为基础模型名。
+  // 为避免缓存 miss（从而导致无法为历史消息自动补签名），这里统一按“基础模型名”缓存。
+  return raw.replace(/-(?:1k|2k|4k|8k)$/i, '');
 }
 
 function pruneModelMapIfNeeded(map) {

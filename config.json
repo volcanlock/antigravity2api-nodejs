@@ -15,7 +15,7 @@
     "modelsUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
     "noStreamUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:generateContent",
     "host": "daily-cloudcode-pa.sandbox.googleapis.com",
-    "userAgent": "antigravity/1.11.3 windows/amd64"
+    "userAgent": "antigravity/1.11.9 windows/amd64"
   },
   "defaults": {
     "temperature": 1,
@@ -34,8 +34,8 @@
     "useNativeAxios": false,
     "useContextSystemPrompt": true,
     "passSignatureToClient": false,
-    "debugDumpRequestResponse": false,
+    "debugDumpRequestResponse": true,
     "useCachedSignature": true,
-    "useFallbackSignature": false
+    "useFallbackSignature": true
   }
 }

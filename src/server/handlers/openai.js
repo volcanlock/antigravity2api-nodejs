@@ -80,14 +80,18 @@ export const handleOpenAIRequest = async (req, res) => {
       try {
         let usageData = null;
         if (isImageModel) {
-          const { content, usage } = await with429Retry(
+          const { content, usage, reasoningSignature } = await with429Retry(
             () => generateAssistantResponseNoStream(requestBody, token),
             safeRetries,
             'chat.stream.image '
           );
           usageData = usage;
-          writeStreamData(res, createStreamChunk(id, created, model, { content }));
-          writeStreamData(res, { ...createStreamChunk(id, created, model, {}, 'stop'), usage });
+          const delta = { content };
+          if (reasoningSignature && config.passSignatureToClient) {
+            delta.thoughtSignature = reasoningSignature;
+          }
+          writeStreamData(res, createStreamChunk(id, created, model, delta));
+          writeStreamData(res, { ...createStreamChunk(id, created, model, {}, 'stop'), usage: usageData });
         } else {
           let hasToolCall = false;
 
