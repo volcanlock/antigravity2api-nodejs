@@ -123,7 +123,13 @@ function setActiveSettingSection(id, scroll = true) {
     
     if (scroll) {
         const el = document.getElementById(activeSettingSectionId);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const container = document.getElementById('settingsPage');
+        if (el && container) {
+            // 计算元素相对于容器的位置
+            const elTop = el.offsetTop;
+            // 滚动容器而不是整个页面
+            container.scrollTo({ top: elTop - 10, behavior: 'smooth' });
+        }
     }
 }
 
