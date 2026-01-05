@@ -27,9 +27,16 @@ export function getSignatureContext(sessionId, actualModelName) {
  * @param {Array} antigravityMessages - 目标消息数组
  */
 export function pushUserMessage(extracted, antigravityMessages) {
+  const parts = [];
+  // 仅当 text 非空时才添加，避免生成空的 text part 导致 API 报错
+  if (extracted.text && extracted.text.trim()) {
+    parts.push({ text: extracted.text });
+  }
+  parts.push(...extracted.images);
+
   antigravityMessages.push({
     role: 'user',
-    parts: [{ text: extracted?.text || ' ' }, ...extracted.images]
+    parts
   });
 }
 
