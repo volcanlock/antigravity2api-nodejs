@@ -230,15 +230,23 @@ function showImportUploadModal() {
             <div class="import-tab-content hidden" id="importTabManual">
                 <div class="form-group">
                     <label>🔑 Access Token <span style="color: var(--danger);">*</span></label>
-                    <input type="text" id="manualAccessToken" placeholder="Access Token (必填)">
+                    <input type="text" id="manualAccessToken" placeholder="Access Token (必填)" autocomplete="off">
                 </div>
                 <div class="form-group">
                     <label>🔄 Refresh Token <span style="color: var(--danger);">*</span></label>
-                    <input type="text" id="manualRefreshToken" placeholder="Refresh Token (必填)">
+                    <input type="text" id="manualRefreshToken" placeholder="Refresh Token (必填)" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label>📁 Project ID</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <input type="text" id="manualProjectId" placeholder="Project ID (可选，留空则自动获取)" style="flex: 1;" autocomplete="off">
+                        <button class="btn btn-sm btn-info" id="fetchProjectIdBtn" onclick="fetchProjectIdForManual()" style="white-space: nowrap;">🔍 自动获取</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-light); margin-top: 0.25rem;">💡 可以手动填写，或填写 Token 后点击“自动获取”</p>
                 </div>
                 <div class="form-group">
                     <label>⏱️ 有效期(秒)</label>
-                    <input type="number" id="manualExpiresIn" placeholder="有效期(秒)" value="3599">
+                    <input type="number" id="manualExpiresIn" placeholder="有效期(秒)" value="3599" autocomplete="off">
                 </div>
                 <p style="font-size: 0.8rem; color: var(--text-light); margin-bottom: 0.5rem;">💡 有效期默认3599秒(约1小时)，手动填入不需要密码验证</p>
             </div>
@@ -627,6 +635,7 @@ async function confirmImportFromModal() {
     if (currentImportTab === 'manual') {
         const accessToken = document.getElementById('manualAccessToken').value.trim();
         const refreshToken = document.getElementById('manualRefreshToken').value.trim();
+        const projectId = document.getElementById('manualProjectId').value.trim();
         const expiresIn = parseInt(document.getElementById('manualExpiresIn').value) || 3599;
 
         if (!accessToken || !refreshToken) {
@@ -636,10 +645,14 @@ async function confirmImportFromModal() {
 
         showLoading('正在添加Token...');
         try {
+            const tokenData = { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn };
+            if (projectId) {
+                tokenData.projectId = projectId;
+            }
             const response = await authFetch('/admin/tokens', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn })
+                body: JSON.stringify(tokenData)
             });
 
             const data = await response.json();
@@ -1261,5 +1274,69 @@ async function deleteToken(tokenId) {
     } catch (error) {
         hideLoading();
         showToast('删除失败: ' + error.message, 'error');
+    }
+}
+
+// 手动填入表单中自动获取 Project ID
+async function fetchProjectIdForManual() {
+    const accessToken = document.getElementById('manualAccessToken').value.trim();
+    const refreshToken = document.getElementById('manualRefreshToken').value.trim();
+
+    if (!accessToken || !refreshToken) {
+        showToast('请先填写 Access Token 和 Refresh Token', 'warning');
+        return;
+    }
+
+    const btn = document.getElementById('fetchProjectIdBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ 获取中...';
+
+    try {
+        // 先添加 Token（临时），然后获取 Project ID
+        const addResponse = await authFetch('/admin/tokens', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                access_token: accessToken,
+                refresh_token: refreshToken,
+                expires_in: 3599
+            })
+        });
+
+        const addData = await addResponse.json();
+        if (!addData.success) {
+            throw new Error(addData.message || '添加 Token 失败');
+        }
+
+        const tokenId = addData.tokenId;
+
+        // 获取 Project ID
+        const fetchResponse = await authFetch(`/admin/tokens/${encodeURIComponent(tokenId)}/fetch-project-id`, {
+            method: 'POST'
+        });
+
+        const fetchData = await fetchResponse.json();
+
+        if (fetchData.success && fetchData.projectId) {
+            document.getElementById('manualProjectId').value = fetchData.projectId;
+            showToast(`获取成功: ${fetchData.projectId}`, 'success');
+
+            // 删除临时添加的 Token（因为用户还没确认）
+            await authFetch(`/admin/tokens/${encodeURIComponent(tokenId)}`, {
+                method: 'DELETE'
+            });
+        } else {
+            // 删除临时 Token
+            await authFetch(`/admin/tokens/${encodeURIComponent(tokenId)}`, {
+                method: 'DELETE'
+            });
+            throw new Error(fetchData.message || '该账号无法获取 Project ID');
+        }
+    } catch (error) {
+        showToast('获取失败: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 }

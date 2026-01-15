@@ -40,7 +40,7 @@ export const createClaudeStreamEvent = (eventType, data) => {
  */
 export const createClaudeResponse = (id, model, content, reasoning, reasoningSignature, toolCalls, stopReason, usage) => {
   const contentBlocks = [];
-  
+
   // 思维链内容（如果有）- Claude 格式用 thinking 类型
   if (reasoning) {
     const thinkingBlock = {
@@ -52,7 +52,7 @@ export const createClaudeResponse = (id, model, content, reasoning, reasoningSig
     }
     contentBlocks.push(thinkingBlock);
   }
-  
+
   // 文本内容
   if (content) {
     contentBlocks.push({
@@ -60,7 +60,7 @@ export const createClaudeResponse = (id, model, content, reasoning, reasoningSig
       text: content
     });
   }
-  
+
   // 工具调用
   if (toolCalls && toolCalls.length > 0) {
     for (const tc of toolCalls) {
@@ -116,7 +116,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
       return res.status(400).json(buildClaudeErrorPayload({ message: 'messages is required' }, 400));
     }
 
-    const token = await tokenManager.getToken();
+    const token = await tokenManager.getToken(model);
     if (!token) {
       throw new Error('没有可用的token，请运行 npm run login 获取token');
     }
@@ -130,22 +130,22 @@ export const handleClaudeRequest = async (req, res, isStream) => {
     if (isImageModel) {
       prepareImageRequest(requestBody);
     }
-    
+
     const msgId = `msg_${Date.now()}`;
     const maxRetries = Number(config.retryTimes || 0);
     const safeRetries = maxRetries > 0 ? Math.floor(maxRetries) : 0;
-    
+
     if (isStream) {
       setStreamHeaders(res);
       const heartbeatTimer = createHeartbeat(res);
-      
+
       try {
         let contentIndex = 0;
         let usageData = null;
         let hasToolCall = false;
         let currentBlockType = null;
         let reasoningSent = false;
-        
+
         // 发送 message_start
         res.write(createClaudeStreamEvent('message_start', {
           type: "message_start",
@@ -160,15 +160,16 @@ export const handleClaudeRequest = async (req, res, isStream) => {
             usage: { input_tokens: 0, output_tokens: 0 }
           }
         }));
-        
+
         if (isImageModel) {
           // 生图模型：使用非流式获取结果后以流式格式返回
           const { content, usage } = await with429Retry(
             () => generateAssistantResponseNoStream(requestBody, token),
             safeRetries,
-            'claude.stream.image '
+            'claude.stream.image ',
+            () => tokenManager.recordRequest(token, model)
           );
-          
+
           // 发送文本块
           res.write(createClaudeStreamEvent('content_block_start', {
             type: "content_block_start",
@@ -184,7 +185,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
             type: "content_block_stop",
             index: 0
           }));
-          
+
           // 发送 message_delta 和 message_stop
           res.write(createClaudeStreamEvent('message_delta', {
             type: "message_delta",
@@ -194,12 +195,12 @@ export const handleClaudeRequest = async (req, res, isStream) => {
           res.write(createClaudeStreamEvent('message_stop', {
             type: "message_stop"
           }));
-          
+
           clearInterval(heartbeatTimer);
           res.end();
           return;
         }
-        
+
         await with429Retry(
           () => generateAssistantResponse(requestBody, token, (data) => {
             if (data.type === 'usage') {
@@ -298,9 +299,10 @@ export const handleClaudeRequest = async (req, res, isStream) => {
             }
           }),
           safeRetries,
-          'claude.stream '
+          'claude.stream ',
+          () => tokenManager.recordRequest(token, model)
         );
-        
+
         // 结束最后一个内容块
         if (currentBlockType) {
           res.write(createClaudeStreamEvent('content_block_stop', {
@@ -308,7 +310,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
             index: contentIndex
           }));
         }
-        
+
         // 发送 message_delta
         const stopReason = hasToolCall ? 'tool_use' : 'end_turn';
         res.write(createClaudeStreamEvent('message_delta', {
@@ -316,12 +318,12 @@ export const handleClaudeRequest = async (req, res, isStream) => {
           delta: { stop_reason: stopReason, stop_sequence: null },
           usage: usageData ? { output_tokens: usageData.completion_tokens || 0 } : { output_tokens: 0 }
         }));
-        
+
         // 发送 message_stop
         res.write(createClaudeStreamEvent('message_stop', {
           type: "message_stop"
         }));
-        
+
         clearInterval(heartbeatTimer);
         res.end();
       } catch (error) {
@@ -338,13 +340,13 @@ export const handleClaudeRequest = async (req, res, isStream) => {
       // 假非流模式：使用流式API获取数据，组装成非流式响应
       req.setTimeout(0);
       res.setTimeout(0);
-      
+
       let content = '';
       let reasoningContent = '';
       let reasoningSignature = null;
       const toolCalls = [];
       let usageData = null;
-      
+
       try {
         await with429Retry(
           () => generateAssistantResponse(requestBody, token, (data) => {
@@ -362,9 +364,10 @@ export const handleClaudeRequest = async (req, res, isStream) => {
             }
           }),
           safeRetries,
-          'claude.fake_no_stream '
+          'claude.fake_no_stream ',
+          () => tokenManager.recordRequest(token, model)
         );
-        
+
         const stopReason = toolCalls.length > 0 ? 'tool_use' : 'end_turn';
         const response = createClaudeResponse(
           msgId,
@@ -376,7 +379,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
           stopReason,
           usageData
         );
-        
+
         res.json(response);
       } catch (error) {
         logger.error('Claude 假非流请求失败:', error.message);
@@ -388,13 +391,14 @@ export const handleClaudeRequest = async (req, res, isStream) => {
       // 非流式请求
       req.setTimeout(0);
       res.setTimeout(0);
-      
+
       const { content, reasoningContent, reasoningSignature, toolCalls, usage } = await with429Retry(
         () => generateAssistantResponseNoStream(requestBody, token),
         safeRetries,
-        'claude.no_stream '
+        'claude.no_stream ',
+        () => tokenManager.recordRequest(token, model)
       );
-      
+
       const stopReason = toolCalls.length > 0 ? 'tool_use' : 'end_turn';
       const response = createClaudeResponse(
         msgId,
@@ -406,7 +410,7 @@ export const handleClaudeRequest = async (req, res, isStream) => {
         stopReason,
         usage
       );
-      
+
       res.json(response);
     }
   } catch (error) {

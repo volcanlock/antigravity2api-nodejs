@@ -14,10 +14,10 @@ import { getThoughtSignatureForModel, getToolSignatureForModel, sanitizeToolName
  */
 export function getSignatureContext(sessionId, actualModelName, hasTools = false) {
   const isImage = isImageModel(actualModelName);
-  
+
   // 判断是否应该从缓存获取签名
   const shouldGetCached = shouldCacheSignature({ hasTools, isImageModel: isImage });
-  
+
   // 从缓存获取签名+内容对象（现在返回 { signature, content } 或 null）
   const cachedEntry = shouldGetCached ? getSignature(sessionId, actualModelName, { hasTools }) : null;
 
@@ -37,7 +37,7 @@ export function getSignatureContext(sessionId, actualModelName, hasTools = false
     // 兜底签名
     reasoningSignature = getThoughtSignatureForModel(actualModelName);
     reasoningContent = config.cacheThinking ? ' ' : ' '; // 兜底签名没有对应内容
-    
+
     if (hasTools) {
       toolSignature = getToolSignatureForModel(actualModelName);
       toolContent = ' ';
@@ -192,7 +192,7 @@ export function pushModelMessage({ parts, toolCalls, hasContent }, antigravityMe
  */
 export function buildRequestBody({ contents, tools, generationConfig, sessionId, systemInstruction }, token, actualModelName) {
   const hasTools = tools && tools.length > 0;
-  
+
   const requestBody = {
     project: token.projectId,
     requestId: generateRequestId(),
@@ -222,6 +222,31 @@ export function buildRequestBody({ contents, tools, generationConfig, sessionId,
 }
 
 /**
+ * 清理 system instruction part，移除 Gemini API 不支持的字段
+ * @param {Object} part - 原始 part 对象
+ * @returns {Object} 清理后的 part 对象（仅保留 text、inlineData 等 Gemini 支持的字段）
+ */
+function cleanSystemPart(part) {
+  if (!part || typeof part !== 'object') return part;
+
+  const cleanedPart = {};
+
+  // 只保留 Gemini API 支持的 part 字段
+  if (part.text !== undefined) {
+    cleanedPart.text = part.text;
+  }
+  if (part.inlineData !== undefined) {
+    cleanedPart.inlineData = part.inlineData;
+  }
+  if (part.fileData !== undefined) {
+    cleanedPart.fileData = part.fileData;
+  }
+
+  // 返回清理后的 part，如果没有有效内容则返回 null
+  return Object.keys(cleanedPart).length > 0 ? cleanedPart : null;
+}
+
+/**
  * 构建系统提示词 parts 数组
  *
  * 逻辑说明：
@@ -239,35 +264,40 @@ export function buildRequestBody({ contents, tools, generationConfig, sessionId,
  */
 export function buildSystemPromptParts(userSystemPrompt) {
   const parts = [];
-  
+
   // 获取各层提示词（config.js 已处理默认值，直接使用）
   const officialPrompt = config.officialSystemPrompt;
   const proxyPrompt = config.systemInstruction;
-  
+
   // 处理用户提示词：可能是字符串或 parts 数组
   let userParts = [];
   if (userSystemPrompt) {
     if (typeof userSystemPrompt === 'string' && userSystemPrompt.trim()) {
       userParts = [{ text: userSystemPrompt.trim() }];
     } else if (Array.isArray(userSystemPrompt)) {
-      userParts = userSystemPrompt.filter(p => p && (p.text || p.inlineData));
+      // 清理每个 part，移除 Gemini API 不支持的字段（如 type、cache_control）
+      userParts = userSystemPrompt
+        .map(p => cleanSystemPart(p))
+        .filter(p => p !== null);
     } else if (typeof userSystemPrompt === 'object' && userSystemPrompt.parts) {
       // 处理 { role: 'user', parts: [...] } 格式
-      userParts = userSystemPrompt.parts.filter(p => p && (p.text || p.inlineData));
+      userParts = userSystemPrompt.parts
+        .map(p => cleanSystemPart(p))
+        .filter(p => p !== null);
     }
   }
-  
+
   // 构建反代提示词部分（可能包含用户请求的 system）
   const proxyParts = [];
   if (proxyPrompt.trim()) {
     proxyParts.push({ text: proxyPrompt.trim() });
   }
-  
+
   // 如果开启上下文 System，将用户请求的 system 追加到反代提示词后面
   if (config.useContextSystemPrompt && userParts.length > 0) {
     proxyParts.push(...userParts);
   }
-  
+
   // 根据官方提示词位置配置，组合最终的 parts 数组
   if (config.officialPromptPosition === 'before') {
     // 官方提示词在前
@@ -282,7 +312,7 @@ export function buildSystemPromptParts(userSystemPrompt) {
       parts.push({ text: officialPrompt.trim() });
     }
   }
-  
+
   return parts;
 }
 
@@ -293,11 +323,11 @@ export function buildSystemPromptParts(userSystemPrompt) {
  */
 export function buildSystemInstruction(userSystemPrompt) {
   const parts = buildSystemPromptParts(userSystemPrompt);
-  
+
   if (parts.length === 0) {
     return null;
   }
-  
+
   if (config.mergeSystemPrompt) {
     // 合并为单个字符串
     const mergedText = parts
@@ -326,16 +356,16 @@ export function buildSystemInstruction(userSystemPrompt) {
 export function mergeSystemInstruction(baseSystem, contextSystem) {
   // 使用新的构建函数
   const result = buildSystemInstruction(contextSystem);
-  
+
   if (!result) {
     return baseSystem || '';
   }
-  
+
   // 返回合并后的文本
   if (result.parts && result.parts.length > 0) {
     return result.parts.map(p => p.text || '').filter(t => t.trim()).join('\n\n');
   }
-  
+
   return baseSystem || '';
 }
 

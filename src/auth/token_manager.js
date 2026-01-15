@@ -10,6 +10,7 @@ import {
 } from '../constants/index.js';
 import TokenStore from './token_store.js';
 import { TokenError } from '../utils/errors.js';
+import quotaManager from './quota_manager.js';
 
 // 轮询策略枚举
 const RotationStrategy = {
@@ -556,32 +557,6 @@ class TokenManager {
     this.tokenRequestCounts.set(tokenKey, 0);
   }
 
-  // 判断是否应该切换到下一个token
-  shouldRotate(token) {
-    switch (this.rotationStrategy) {
-      case RotationStrategy.ROUND_ROBIN:
-        // 均衡负载：每次请求后都切换
-        return true;
-
-      case RotationStrategy.QUOTA_EXHAUSTED:
-        // 额度耗尽才切换：检查token的hasQuota标记
-        // 如果hasQuota为false，说明额度已耗尽，需要切换
-        return token.hasQuota === false;
-
-      case RotationStrategy.REQUEST_COUNT:
-        // 自定义次数后切换
-        const tokenKey = token.refresh_token;
-        const count = this.incrementRequestCount(tokenKey);
-        if (count >= this.requestCountPerToken) {
-          this.resetRequestCount(tokenKey);
-          return true;
-        }
-        return false;
-
-      default:
-        return true;
-    }
-  }
 
   // 标记token额度耗尽
   markQuotaExhausted(token) {
@@ -603,6 +578,24 @@ class TokenManager {
     token.hasQuota = true;
     this.saveToFile(token);
     log.info(`...${token.access_token.slice(-8)}: 额度已恢复`);
+  }
+
+  /**
+   * 记录一次请求（用于额度预估）
+   * @param {Object} token - Token 对象
+   * @param {string} modelId - 使用的模型 ID
+   */
+  async recordRequest(token, modelId) {
+    if (!token || !modelId) return;
+
+    try {
+      const salt = await this.store.getSalt();
+      const tokenId = generateTokenId(token.refresh_token, salt);
+      quotaManager.recordRequest(tokenId, modelId);
+    } catch (error) {
+      // 记录失败不影响请求
+      log.warn('记录请求次数失败:', error.message);
+    }
   }
 
   /**
@@ -667,23 +660,68 @@ class TokenManager {
     this._rebuildAvailableQuotaTokens();
   }
 
-  async getToken() {
+  /**
+   * 检查所有 token 对指定模型的额度是否都为 0
+   * @param {string} modelId - 模型 ID
+   * @returns {boolean} true = 所有 token 对该模型额度都为 0
+   * @private
+   */
+  _checkAllTokensExhaustedForModel(modelId) {
+    if (!modelId || this.tokens.length === 0) return false;
+
+    for (const token of this.tokens) {
+      if (this._hasQuotaForModel(token, modelId)) {
+        return false; // 有至少一个 token 有额度
+      }
+    }
+    return true; // 所有 token 都没有额度
+  }
+
+  /**
+   * 检查 token 对指定模型是否有额度
+   * @param {Object} token - Token 对象
+   * @param {string} modelId - 模型 ID
+   * @returns {boolean} true = 有额度或无数据，false = 额度为 0
+   * @private
+   */
+  _hasQuotaForModel(token, modelId) {
+    if (!token || !modelId) return true;
+
+    try {
+      const salt = this.store._salt; // 使用同步方式获取 salt
+      if (!salt) return true; // 没有 salt，假设有额度
+
+      const tokenId = generateTokenId(token.refresh_token, salt);
+      return quotaManager.hasQuotaForModel(tokenId, modelId);
+    } catch (error) {
+      // 出错时假设有额度
+      return true;
+    }
+  }
+
+  /**
+   * 获取可用的 token
+   * @param {string} [modelId] - 可选，请求的模型 ID，用于检查该模型的额度
+   * @returns {Promise<Object|null>} token 对象
+   */
+  async getToken(modelId = null) {
     await this._ensureInitialized();
     if (this.tokens.length === 0) return null;
 
     // 针对额度耗尽策略做单独的高性能处理
     if (this.rotationStrategy === RotationStrategy.QUOTA_EXHAUSTED) {
-      return this._getTokenForQuotaExhaustedStrategy();
+      return this._getTokenForQuotaExhaustedStrategy(modelId);
     }
 
-    return this._getTokenForDefaultStrategy();
+    return this._getTokenForDefaultStrategy(modelId);
   }
 
   /**
    * 额度耗尽策略的 token 获取
+   * @param {string} [modelId] - 请求的模型 ID
    * @private
    */
-  async _getTokenForQuotaExhaustedStrategy() {
+  async _getTokenForQuotaExhaustedStrategy(modelId = null) {
     // 如果当前没有可用 token，尝试重置额度
     if (this.availableQuotaTokenIndices.length === 0) {
       this._resetAllQuotas();
@@ -694,12 +732,26 @@ class TokenManager {
       return null;
     }
 
+    // 如果提供了 modelId，先检查是否所有 token 对该模型的额度都为 0
+    let allTokensExhausted = false;
+    if (modelId) {
+      allTokensExhausted = this._checkAllTokensExhaustedForModel(modelId);
+    }
+
     const startIndex = this.currentQuotaIndex % totalAvailable;
 
     for (let i = 0; i < totalAvailable; i++) {
       const listIndex = (startIndex + i) % totalAvailable;
       const tokenIndex = this.availableQuotaTokenIndices[listIndex];
       const token = this.tokens[tokenIndex];
+
+      // 如果提供了 modelId 且不是所有 token 都耗尽，检查该 token 对该模型是否有额度
+      if (modelId && !allTokensExhausted) {
+        if (!this._hasQuotaForModel(token, modelId)) {
+          // 该 token 对该模型额度为 0，跳过
+          continue;
+        }
+      }
 
       try {
         const result = await this._prepareToken(token);
@@ -735,15 +787,30 @@ class TokenManager {
 
   /**
    * 默认策略（round_robin / request_count）的 token 获取
+   * @param {string} [modelId] - 请求的模型 ID
    * @private
    */
-  async _getTokenForDefaultStrategy() {
+  async _getTokenForDefaultStrategy(modelId = null) {
     const totalTokens = this.tokens.length;
     const startIndex = this.currentIndex;
+
+    // 如果提供了 modelId，先检查是否所有 token 对该模型的额度都为 0
+    let allTokensExhausted = false;
+    if (modelId) {
+      allTokensExhausted = this._checkAllTokensExhaustedForModel(modelId);
+    }
 
     for (let i = 0; i < totalTokens; i++) {
       const index = (startIndex + i) % totalTokens;
       const token = this.tokens[index];
+
+      // 如果提供了 modelId 且不是所有 token 都耗尽，检查该 token 对该模型是否有额度
+      if (modelId && !allTokensExhausted) {
+        if (!this._hasQuotaForModel(token, modelId)) {
+          // 该 token 对该模型额度为 0，跳过
+          continue;
+        }
+      }
 
       try {
         const result = await this._prepareToken(token);
@@ -756,9 +823,17 @@ class TokenManager {
         // 更新当前索引
         this.currentIndex = index;
 
-        // 根据策略决定是否切换
-        if (this.shouldRotate(token)) {
+        // 根据策略决定是否切换（仅 round_robin 策略每次切换）
+        if (this.rotationStrategy === RotationStrategy.ROUND_ROBIN) {
           this.currentIndex = (this.currentIndex + 1) % this.tokens.length;
+        } else if (this.rotationStrategy === RotationStrategy.REQUEST_COUNT) {
+          // 自定义次数策略：请求计数在 recordRequest 中处理，这里只处理切换逻辑
+          const tokenKey = token.refresh_token;
+          const count = this.tokenRequestCounts.get(tokenKey) || 0;
+          if (count >= this.requestCountPerToken) {
+            this.resetRequestCount(tokenKey);
+            this.currentIndex = (this.currentIndex + 1) % this.tokens.length;
+          }
         }
 
         return token;

@@ -10,6 +10,11 @@
     "strategy": "request_count",
     "requestCount": 50
   },
+  "log": {
+    "maxSizeMB": 10,
+    "maxFiles": 5,
+    "maxMemory": 500
+  },
   "api": {
     "use": "sandbox",
     "sandbox": {

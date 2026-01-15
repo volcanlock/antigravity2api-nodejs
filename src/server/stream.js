@@ -25,11 +25,11 @@ export const createHeartbeat = (res) => {
       clearInterval(timer);
     }
   }, HEARTBEAT_INTERVAL);
-  
+
   // 响应结束时清理
   res.on('close', () => clearInterval(timer));
   res.on('finish', () => clearInterval(timer));
-  
+
   return timer;
 };
 
@@ -162,7 +162,7 @@ function tryParseJson(value) {
       const sliced = value.slice(first, last + 1);
       try {
         return JSON.parse(sliced);
-      } catch {}
+      } catch { }
     }
     return null;
   }
@@ -246,14 +246,19 @@ function computeBackoffMs(attempt, explicitDelayMs) {
  * @param {Function} fn - 要执行的异步函数，接收 attempt 参数
  * @param {number} maxRetries - 最大重试次数
  * @param {string} loggerPrefix - 日志前缀
+ * @param {Function} onAttempt - 可选，每次尝试时的回调（用于记录请求次数）
  * @returns {Promise<any>}
  */
-export const with429Retry = async (fn, maxRetries, loggerPrefix = '') => {
+export const with429Retry = async (fn, maxRetries, loggerPrefix = '', onAttempt = null) => {
   const retries = Number.isFinite(maxRetries) && maxRetries > 0 ? Math.floor(maxRetries) : 0;
   let attempt = 0;
   // 首次执行 + 最多 retries 次重试
   while (true) {
     try {
+      // 每次尝试时调用回调（用于记录请求次数）
+      if (typeof onAttempt === 'function') {
+        onAttempt(attempt);
+      }
       return await fn(attempt);
     } catch (error) {
       // 兼容多种错误格式：error.status, error.statusCode, error.response?.status

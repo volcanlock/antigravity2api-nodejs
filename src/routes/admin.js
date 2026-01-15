@@ -489,8 +489,13 @@ router.put('/config', cookieAuthMiddleware, (req, res) => {
     // 安全检查：如果修改了官方系统提示词，必须验证密码
     if (envUpdates && envUpdates.OFFICIAL_SYSTEM_PROMPT !== undefined) {
       const currentEnv = parseEnvFile(envPath);
+      // 正规化换行符后再比较（避免 \r\n 和 \n 不一致导致误判）
+      const normalizeNewlines = (str) => (str || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+      const newValue = normalizeNewlines(envUpdates.OFFICIAL_SYSTEM_PROMPT);
+      const oldValue = normalizeNewlines(currentEnv.OFFICIAL_SYSTEM_PROMPT);
+
       // 只有当值真正改变时才检查
-      if (envUpdates.OFFICIAL_SYSTEM_PROMPT !== currentEnv.OFFICIAL_SYSTEM_PROMPT) {
+      if (newValue !== oldValue) {
         if (!password || !verifyPassword(password)) {
           logger.warn(`尝试修改官方系统提示词但密码验证失败 IP: ${getClientIP(req)}`);
           return res.status(403).json({
@@ -671,11 +676,15 @@ router.get('/tokens/:tokenId/quotas', cookieAuthMiddleware, async (req, res) => 
       };
     });
 
+    // 获取请求计数
+    const requestCounts = quotaData.requestCounts || {};
+
     res.json({
       success: true,
       data: {
         lastUpdated: quotaData.lastUpdated,
-        models: modelsWithBeijingTime
+        models: modelsWithBeijingTime,
+        requestCounts // 返回请求计数供前端计算预估
       }
     });
   } catch (error) {

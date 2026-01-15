@@ -9,6 +9,7 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { closeRequester } from '../api/client.js';
 import logger from '../utils/logger.js';
+import logWsServer from '../utils/logWsServer.js';
 import config from '../config/config.js';
 import memoryManager from '../utils/memoryManager.js';
 import { getPublicDir, getRelativePath } from '../utils/paths.js';
@@ -151,10 +152,37 @@ app.get('/health', (req, res) => {
 
 // 404 处理 (未匹配到任何路由)
 app.use((req, res, next) => {
-  // 忽略 favicon.ico 等常见浏览器的自动请求，避免误伤
-  if (req.path === '/favicon.ico') {
-    return res.status(404).end();
+  // 白名单路径：这些路径的 404 不触发 IP 封禁
+  // 包含客户端（如 Claude Code）可能请求但我们未实现的端点
+  const whitelistPaths = [
+    '/favicon.ico',
+    '/robots.txt',
+    '/.well-known',
+    // Claude API 相关端点
+    '/api/event_logging',
+    '/v1/complete',
+    '/v1/models',
+    // OpenAI API 相关端点
+    '/v1/files',
+    '/v1/fine-tunes',
+    '/v1/fine_tuning',
+    '/v1/assistants',
+    '/v1/threads',
+    '/v1/batches',
+    '/v1/uploads',
+    '/v1/organization',
+    '/v1/usage',
+    // Gemini API 相关端点
+    '/v1beta/models'
+  ];
+
+  const path = req.path;
+  const isWhitelisted = whitelistPaths.some(p => path === p || path.startsWith(p + '/'));
+
+  if (isWhitelisted) {
+    return res.status(404).json({ error: 'Not Found' });
   }
+
   ipBlockManager.recordViolation(req.ip, '404');
   res.status(404).json({ error: 'Not Found' });
 });
@@ -162,6 +190,15 @@ app.use((req, res, next) => {
 // ==================== 服务器启动 ====================
 const server = app.listen(config.server.port, config.server.host, () => {
   logger.info(`服务器已启动: ${config.server.host}:${config.server.port}`);
+
+  // 初始化 WebSocket 日志服务
+  logWsServer.initialize(server);
+  logWsServer.updateConfig({
+    logMaxSizeMB: config.log?.maxSizeMB,
+    logMaxFiles: config.log?.maxFiles,
+    logMaxMemory: config.log?.maxMemory
+  });
+  logger.info('WebSocket 日志服务已启动: /ws/logs');
 });
 
 server.on('error', (error) => {
@@ -180,24 +217,28 @@ server.on('error', (error) => {
 // ==================== 优雅关闭 ====================
 const shutdown = () => {
   logger.info('正在关闭服务器...');
-  
+
   // 停止内存管理器
   memoryManager.stop();
   logger.info('已停止内存管理器');
-  
+
   // 关闭子进程请求器
   closeRequester();
   logger.info('已关闭子进程请求器');
-  
+
   // 清理对象池
   clearChunkPool();
   logger.info('已清理对象池');
-  
+
+  // 关闭 WebSocket 日志服务
+  logWsServer.close();
+  logger.info('已关闭 WebSocket 日志服务');
+
   server.close(() => {
     logger.info('服务器已关闭');
     process.exit(0);
   });
-  
+
   // 5秒超时强制退出
   setTimeout(() => {
     logger.warn('服务器关闭超时，强制退出');

@@ -41,7 +41,11 @@ const EXCLUDED_KEYS = new Set([
   '$schema', 'additionalProperties', 'minLength', 'maxLength',
   'minItems', 'maxItems', 'uniqueItems', 'exclusiveMaximum',
   'exclusiveMinimum', 'const', 'anyOf', 'oneOf', 'allOf',
-  'any_of', 'one_of', 'all_of', 'multipleOf'
+  'any_of', 'one_of', 'all_of', 'multipleOf',
+  // Gemini API 不支持的高级 JSON Schema 字段
+  'propertyNames', 'patternProperties', 'dependencies',
+  'if', 'then', 'else', 'not', 'contentMediaType', 'contentEncoding',
+  'definitions', '$defs', '$ref', '$id', '$comment'
 ]);
 
 // 需要转换为大写的 type 值映射
@@ -152,10 +156,10 @@ export function generateGenerationConfig(parameters, enableThinking, actualModel
 
   // 使用统一的参数转换函数
   const generationConfig = toGenerationConfig(normalizedParams, enableThinking, actualModelName);
-  
+
   // 添加 stopSequences
   generationConfig.stopSequences = DEFAULT_STOP_SEQUENCES;
-  
+
   return generationConfig;
 }
 
@@ -174,8 +178,8 @@ export function extractSystemInstruction(openaiMessages) {
       const content = typeof message.content === 'string'
         ? message.content
         : (Array.isArray(message.content)
-            ? message.content.filter(item => item.type === 'text').map(item => item.text).join('')
-            : '');
+          ? message.content.filter(item => item.type === 'text').map(item => item.text).join('')
+          : '');
       if (content.trim()) systemTexts.push(content.trim());
     } else {
       break;
@@ -190,17 +194,17 @@ export function extractSystemInstruction(openaiMessages) {
 export function prepareImageRequest(requestBody) {
   if (!requestBody || !requestBody.request) return requestBody;
   let imageSize = "1K";
-  if (requestBody.model.includes('4K')){
+  if (requestBody.model.includes('4K')) {
     imageSize = "4K";
-  } else if (requestBody.model.includes('2K')){
+  } else if (requestBody.model.includes('2K')) {
     imageSize = "2K";
   } else {
     imageSize = "1K";
   }
-  if (imageSize !== "1K"){
+  if (imageSize !== "1K") {
     requestBody.model = requestBody.model.slice(0, -3);
   }
-  requestBody.request.generationConfig = { 
+  requestBody.request.generationConfig = {
     candidateCount: 1,
     imageConfig: {
       imageSize: imageSize
